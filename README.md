@@ -13,7 +13,7 @@ Existing accounts choose on their next login if they have not selected a pathway
 Change the choice later in Settings.
 
 This is a separate source project using the same Firebase backend and Android app ID.
-Running it on the same emulator updates that installed app; it does not edit the original source folder.
-The internal Dart package stays `vetconnect` so imports and Firebase configuration remain compatible.
+Running it on the same emulator updates that installed app. It does not edit the original source folder.
+The internal Dart package stays `vetconnect` (imports and Firebase configuration are still compatible).
 
-See [DUALVERSION_NOTES.md](DUALVERSION_NOTES.md) for implementation and verification details.
+See [DUALVERSION_NOTES.md](DUALVERSION_NOTES.md) for details.
