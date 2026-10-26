@@ -1,0 +1,255 @@
+import 'dart:io';
+import 'dart:convert';
+import 'package:vetconnect/services/business_recommendations.dart';
+// Explicit live smoke test: reads the existing Firebase directory and invokes
+// AI search. It does not create accounts, businesses, or donations.
+// Run with: flutter test integration_test/live_directory_test.dart -d emulator-5554
+import 'package:firebase_core/firebase_core.dart';
+import 'package:flutter/material.dart';
+import 'package:flutter_test/flutter_test.dart';
+import 'package:google_maps_flutter/google_maps_flutter.dart';
+import 'package:google_maps_flutter_platform_interface/google_maps_flutter_platform_interface.dart';
+import 'package:integration_test/integration_test.dart';
+import 'package:vetconnect/business/pages/business_ai_search.dart';
+import 'package:vetconnect/business/pages/business_home.dart';
+import 'package:vetconnect/business/pages/create_business.dart';
+import 'package:vetconnect/constants.dart';
+import 'package:vetconnect/donate/pages/donate_page.dart';
+import 'package:vetconnect/firebase_options.dart';
+import 'package:vetconnect/home_page.dart';
+import 'package:vetconnect/jobs/pages/conservation_jobs_page.dart';
+import 'package:vetconnect/main.dart';
+import 'package:vetconnect/services/firebase_helper.dart';
+import 'package:vetconnect/services/location_manager.dart';
+import 'package:vetconnect/theme/art_deco_theme.dart';
+
+Future<void> waitFor(WidgetTester tester, bool Function() condition) async {
+  final deadline = DateTime.now().add(const Duration(seconds: 30));
+  while (!condition() && DateTime.now().isBefore(deadline)) {
+    await tester.pump(const Duration(milliseconds: 250));
+  }
+  if (!condition()) {
+    debugPrint(
+      'Visible text: ${tester.widgetList<Text>(find.byType(Text)).map((text) => text.data).toList()}',
+    );
+    for (final map in tester.widgetList<GoogleMap>(find.byType(GoogleMap))) {
+      debugPrint(
+        'Marker titles: ${map.markers.map((marker) => marker.infoWindow.title).toList()}',
+      );
+    }
+  }
+  expect(condition(), isTrue, reason: 'Expected UI state within 30 seconds');
+}
+
+Widget screen(Widget child) => MaterialApp(
+  theme: ArtDecoTheme.build(),
+  home: child,
+  routes: {AppRoutes.businessAiSearch: (_) => const BusinessAiSearch()},
+);
+
+void main() {
+  IntegrationTestWidgetsFlutterBinding.ensureInitialized();
+  setUpAll(() async {
+    await Firebase.initializeApp(
+      options: DefaultFirebaseOptions.currentPlatform,
+    );
+    Constants.firebaseHelper = (await FirebaseHelper.anonymousEntry())!;
+    // Exercise manual ZIP lookup without granting/changing GPS permission.
+    Constants.locationManager = await LocationManager.init();
+  });
+
+  testWidgets('live ZIP directory, keyword search and careers queries', (
+    tester,
+  ) async {
+    final businesses = await Constants.firebaseHelper.getBusinessesByZips([
+      '21797',
+    ]);
+    expect(businesses, isNotEmpty);
+    expect(businesses.every((b) => b['lat'] is num && b['lng'] is num), isTrue);
+    final keyword = await Constants.firebaseHelper.searchForBusiness('coffee');
+    expect(keyword, isNotEmpty);
+    final jobs = await Constants.firebaseHelper.getConservationJobs();
+    expect(jobs, isNotEmpty);
+  });
+
+  testWidgets('manual ZIP shows pins and sparkle opens working AI search', (
+    tester,
+  ) async {
+    await tester.pumpWidget(screen(const BusinessHome()));
+    await waitFor(
+      tester,
+      () => find
+          .text('Enter a ZIP code to find businesses')
+          .evaluate()
+          .isNotEmpty,
+    );
+    await tester.tap(find.byTooltip('Filter by ZIP code'));
+    await tester.pumpAndSettle();
+    await tester.enterText(find.widgetWithText(TextField, 'ZIP code'), '21797');
+    await tester.tap(find.text('Apply'));
+    await waitFor(
+      tester,
+      () => tester.widget<GoogleMap>(find.byType(GoogleMap)).markers.isNotEmpty,
+    );
+    expect(
+      tester.widget<GoogleMap>(find.byType(GoogleMap)).markers.length,
+      greaterThanOrEqualTo(4),
+    );
+    await tester.pumpAndSettle();
+    expect(find.text('You might like'), findsOneWidget);
+    final profile = await RecommendationProfile.forUser(
+      Constants.firebaseHelper.userId,
+    );
+    final savedInterests = List<String>.of(profile.interests);
+    addTearDown(() => profile.setInterests(savedInterests));
+    if (profile.interests.contains('Food & coffee'))
+      await profile.setInterests([]);
+    await tester.tap(find.text('Interests'));
+    await tester.pumpAndSettle();
+    expect(find.text('Your interests'), findsOneWidget);
+    await tester.tap(find.text('Food & coffee'));
+    await tester.tap(find.text('Save interests'));
+    await tester.pumpAndSettle();
+    expect(
+      (await RecommendationProfile.forUser(
+        Constants.firebaseHelper.userId,
+      )).interests,
+      contains('Food & coffee'),
+    );
+    // This is the first platform map created in this test process (map ID 0).
+    // Pins alone are insufficient: the camera must actually move to this ZIP.
+    final platform = GoogleMapsFlutterPlatform.instance;
+    final deadline = DateTime.now().add(const Duration(seconds: 10));
+    while (await platform.getZoomLevel(mapId: 0) < 12 &&
+        DateTime.now().isBefore(deadline)) {
+      await tester.pump(const Duration(milliseconds: 250));
+    }
+    expect(await platform.getZoomLevel(mapId: 0), greaterThanOrEqualTo(12));
+    final bounds = await platform.getVisibleRegion(mapId: 0);
+    expect(bounds.contains(const LatLng(39.33118, -77.06861)), isTrue);
+    await tester.enterText(find.byType(TextField), 'coffee');
+    await tester.testTextInput.receiveAction(TextInputAction.search);
+    await waitFor(
+      tester,
+      () => find.textContaining('BUSINESSES FOUND').evaluate().isNotEmpty,
+    );
+    await tester.pumpAndSettle();
+    await tester.tap(find.byType(TextField));
+    await tester.pumpAndSettle();
+    await tester.enterText(find.byType(TextField), 'YourOwn');
+    await tester.pump();
+    expect(
+      tester.widget<TextField>(find.byType(TextField)).controller!.text,
+      'YourOwn',
+    );
+    await tester.tap(find.byIcon(Icons.search));
+    await waitFor(
+      tester,
+      () => tester
+          .widget<GoogleMap>(find.byType(GoogleMap))
+          .markers
+          .any((marker) => marker.infoWindow.title == 'YourOwn'),
+    );
+    // Search results may be below the keyboard; dismiss it before inspecting the sheet.
+    FocusManager.instance.primaryFocus?.unfocus();
+    await tester.pumpAndSettle();
+    final yourOwnMarker = tester
+        .widget<GoogleMap>(find.byType(GoogleMap))
+        .markers
+        .firstWhere((marker) => marker.infoWindow.title == 'YourOwn');
+    yourOwnMarker.onTap!();
+    await tester.pumpAndSettle();
+    expect(find.text('Get directions'), findsOneWidget);
+    expect(find.text('LOCATION: Palo Alto, CA 94303'), findsOneWidget);
+    expect(find.textContaining('map pin is approximate'), findsOneWidget);
+    await tester.ensureVisible(find.text('Close'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('Close'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.byTooltip('AI Search'));
+    await tester.pumpAndSettle();
+    expect(find.text('Describe what you need'), findsOneWidget);
+    await tester.enterText(find.byType(TextField), 'I need car repairs');
+    await tester.tap(find.text('Find businesses'));
+    await waitFor(
+      tester,
+      () =>
+          find.textContaining('BUSINESSES FOUND').evaluate().isNotEmpty ||
+          find.textContaining('Failed to get AI').evaluate().isNotEmpty,
+    );
+    expect(find.textContaining('BUSINESSES FOUND'), findsOneWidget);
+    expect(find.textContaining('Searched for'), findsOneWidget);
+    final aiMarker = tester
+        .widget<GoogleMap>(find.byType(GoogleMap))
+        .markers
+        .first;
+    aiMarker.onTap!();
+    await tester.pumpAndSettle();
+    expect(find.text('Get directions'), findsOneWidget);
+    await tester.ensureVisible(find.text('Close'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('Close'));
+    await tester.pumpAndSettle();
+  });
+
+  testWidgets('home, create form, donations and careers render', (
+    tester,
+  ) async {
+    await tester.pumpWidget(screen(const HomePage()));
+    await tester.pumpAndSettle();
+    expect(find.text('Features'), findsOneWidget);
+    await tester.pumpWidget(screen(const CreateBusiness()));
+    await tester.pumpAndSettle();
+    expect(find.text('Put your business on the map'), findsOneWidget);
+    await tester.ensureVisible(find.text('Create business'));
+    await tester.tap(find.text('Create business'));
+    await tester.pumpAndSettle();
+    expect(find.text('MISSING NAME'), findsOneWidget);
+    await tester.tap(find.text('CLOSE'));
+    await tester.pumpAndSettle();
+    await tester.pumpWidget(screen(const DonatePage()));
+    await tester.pumpAndSettle();
+    expect(find.textContaining('80% of proceeds go'), findsOneWidget);
+    expect(find.text('Give with PayPal'), findsOneWidget);
+    expect(find.textContaining('QR code unavailable'), findsNothing);
+    await tester.pumpWidget(screen(const ConservationJobsPage()));
+    await waitFor(
+      tester,
+      () => find
+          .widgetWithText(TextField, 'Search by title or location')
+          .evaluate()
+          .isNotEmpty,
+    );
+    expect(find.text('Careers & resources'), findsOneWidget);
+    expect(tester.takeException(), isNull);
+  });
+  testWidgets('business images can be selected, previewed and removed', (
+    tester,
+  ) async {
+    final directory = await Directory.systemTemp.createTemp(
+      'business-image-ui-',
+    );
+    final png = base64Decode(
+      'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR4nGNw6Vj1HwAFAAJ2nLRnZQAAAABJRU5ErkJggg==',
+    );
+    final first = await File('${directory.path}/first.png').writeAsBytes(png);
+    final second = await File('${directory.path}/second.png').writeAsBytes(png);
+    addTearDown(() => directory.delete(recursive: true));
+    await tester.pumpWidget(
+      screen(CreateBusiness(pickImages: (_) async => [first, second])),
+    );
+    await tester.pumpAndSettle();
+    await tester.ensureVisible(find.text('Add images (0/6)'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('Add images (0/6)'));
+    await tester.pumpAndSettle();
+    expect(find.text('Add images (2/6)'), findsOneWidget);
+    expect(find.byIcon(Icons.broken_image_outlined), findsNothing);
+    await tester.ensureVisible(find.byTooltip('Remove image 1'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.byTooltip('Remove image 1'));
+    await tester.pumpAndSettle();
+    expect(find.text('Add images (1/6)'), findsOneWidget);
+    expect(tester.takeException(), isNull);
+  });
+}

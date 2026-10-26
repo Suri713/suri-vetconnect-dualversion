@@ -1,0 +1,42 @@
+// Explicit live Storage check. Uploads and then deletes a generated 1px image.
+import 'dart:convert';
+import 'package:firebase_auth/firebase_auth.dart';
+import 'package:firebase_core/firebase_core.dart';
+import 'package:firebase_storage/firebase_storage.dart';
+import 'package:flutter_test/flutter_test.dart';
+import 'package:integration_test/integration_test.dart';
+import 'package:vetconnect/firebase_options.dart';
+
+void main() {
+  IntegrationTestWidgetsFlutterBinding.ensureInitialized();
+  setUpAll(
+    () =>
+        Firebase.initializeApp(options: DefaultFirebaseOptions.currentPlatform),
+  );
+  testWidgets('temporary image can upload to authenticated Firebase Storage', (
+    tester,
+  ) async {
+    final user = FirebaseAuth.instance.currentUser;
+    if (user == null) {
+      markTestSkipped(
+        'No signed-in Firebase account; authenticated Storage upload remains unverified.',
+      );
+      return;
+    }
+    final data = base64Decode(
+      'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR4nGNw6Vj1HwAFAAJ2nLRnZQAAAABJRU5ErkJggg==',
+    );
+    final ref = FirebaseStorage.instance.ref(
+      'images/${user.uid}/verification_${DateTime.now().microsecondsSinceEpoch}.png',
+    );
+    var uploaded = false;
+    try {
+      await ref.putData(data, SettableMetadata(contentType: 'image/png'));
+      uploaded = true;
+      expect(await ref.getDownloadURL(), startsWith('https://'));
+      expect(await ref.getData(1024), data);
+    } finally {
+      if (uploaded) await ref.delete();
+    }
+  });
+}
