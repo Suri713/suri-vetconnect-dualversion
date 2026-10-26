@@ -15,8 +15,6 @@ Profiles are stored in `users/{uid}.business` and searched alongside imported `k
 
 AI search uses the selected map area, ZIP, or device location and filters results to a 20-mile radius. ZIP-centroid coordinates are approximate. Recommendation ranking uses interests, search history, viewed businesses, and distance.
 
-## Setup limitation
-
-Earlier checks found the configured Storage bucket returned 404. Photo uploads need a working bucket; profiles can be created without images.
+## Tests
 
 Pathway, search, and upload tests are in `test/`. The live integration test is `integration_test/dualversion_live_test.dart`.

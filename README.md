@@ -17,6 +17,6 @@ flutter pub get
 flutter run
 ```
 
-Cloud Functions need their own deployment and API secrets. Business photos require a working Firebase Storage bucket.
+Backend setup includes deploying Cloud Functions, configuring API secrets, and enabling Firebase Storage for photos.
 
 See [implementation notes](DUALVERSION_NOTES.md) for pathway and search details.
